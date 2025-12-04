@@ -1,5 +1,6 @@
 import Fastify from 'fastify'
 import type { FastifyRequest, FastifyReply } from 'fastify'
+import cors from '@fastify/cors'
 import { pool } from './mysql.js'
 import Groq from 'groq-sdk';
 import { getDatabaseSchema, invalidateSchemaCache } from './schema-generator.js';
@@ -9,7 +10,12 @@ const PORT = 8155
 
 const server = Fastify({ logger: true })
 
-// Inicializar Groq
+await server.register(cors, {
+    origin: 'http://localhost:5173',
+    methods: ['GET', 'POST'],
+    credentials: true
+})
+
 const groq = new Groq({
     apiKey: process.env.GROQ_API_KEY
 });
@@ -53,25 +59,50 @@ server.post<{ Body: QueryRequest }>('/query', async (request: FastifyRequest<{ B
             messages: [
                 {
                     role: 'system',
-                    content: `Eres un experto SQL.
+                    content: `Eres un experto SQL especializado en la base de datos de Integria IMS.
 
 TABLAS DISPONIBLES:
 ${dbSchema}
 
-⚠️ ADVERTENCIA: Los nombres de tabla son EXACTOS. NO los traduzcas ni modifiques.
-- ✅ CORRECTO: tincidencia, tusuario, tinventory, tgrupo
-- ❌ INCORRECTO: tincident, tuser, tincident_track, tincident_field_data
+⚠️ NOMBRES DE TABLA EXACTOS - NO los traduzcas:
+- ✅ CORRECTO: tincidencia, tusuario, tinventory, tgrupo, tobject_type_setup
+- ❌ INCORRECTO: tincident, tuser, inventory, object_type
 
-REGLAS:
-1. Usa EXACTAMENTE los nombres de tabla de arriba
-2. Responde SOLO con SQL puro, sin texto adicional
-3. Si necesitas más columnas, usa SELECT * FROM tabla
-4. Usa LIMIT (máximo 100)
+📋 GUÍA DE CONSULTAS POR TIPO:
 
-EJEMPLOS:
-SELECT * FROM tincidencia ORDER BY id_incidencia DESC LIMIT 10
-SELECT titulo, inicio FROM tincidencia WHERE id_usuario = 5
-SELECT i.titulo, u.nombre_real FROM tincidencia i JOIN tusuario u ON i.id_usuario = u.id_usuario LIMIT 20`
+INCIDENCIAS:
+- Tabla principal: tincidencia
+- Campos clave: id_incidencia, titulo, descripcion, inicio, id_usuario, id_grupo
+- Ejemplo: SELECT * FROM tincidencia ORDER BY id_incidencia DESC LIMIT 10
+
+INVENTARIO:
+- Tabla principal: tinventory
+- Campos clave: id, id_object_type, name, description
+- El campo 'name' contiene códigos (ej: FUENTE-0001), NO nombres descriptivos
+- Para buscar por tipo usa 'description' con LIKE, NO 'name'
+- Para ordenadores: WHERE description LIKE '%ordenador%' OR description LIKE '%computer%' OR description LIKE '%PC%'
+- Para portátiles: WHERE description LIKE '%portatil%' OR description LIKE '%laptop%'
+- Para teléfonos: WHERE description LIKE '%telefono%' OR description LIKE '%phone%' OR description LIKE '%movil%'
+- Para total general: SELECT COUNT(*) AS total FROM tinventory
+- Para ver tipos disponibles: SELECT id_object_type, COUNT(*) FROM tinventory GROUP BY id_object_type
+- Ejemplo: SELECT COUNT(*) AS total FROM tinventory WHERE description LIKE '%portatil%'
+
+USUARIOS:
+- Tabla principal: tusuario
+- Campos clave: id_usuario, nombre_real, id_usuario
+
+REGLAS IMPORTANTES:
+1. Usa EXACTAMENTE los nombres de tabla del schema
+2. Responde SOLO con SQL, sin explicaciones
+3. Para inventario, usa tinventory con id_object_type, NO busques en otras tablas
+4. SIEMPRE usa LIMIT (máximo 100)
+5. Para contar cosas, usa COUNT(*) AS nombre_descriptivo
+
+EJEMPLOS CORRECTOS:
+- Incidencias: SELECT * FROM tincidencia ORDER BY id_incidencia DESC LIMIT 10
+- Inventario total: SELECT COUNT(*) AS total_inventario FROM tinventory LIMIT 1
+- Por tipo: SELECT COUNT(*) AS total FROM tinventory WHERE id_object_type = 1 LIMIT 1
+- Con nombres: SELECT name, description FROM tinventory LIMIT 20`
                 },
                 {
                     role: 'user',
@@ -198,6 +229,35 @@ server.get('/analyze', async (_request: FastifyRequest, reply: FastifyReply) => 
         reply.status(500).send({
             success: false,
             error: error.message || 'Error al analizar la base de datos'
+        });
+    }
+})
+
+// Endpoint para obtener tipos de objetos del inventario
+server.get('/inventory-types', async (_request: FastifyRequest, reply: FastifyReply) => {
+    try {
+        const [types] = await pool.query(`
+            SELECT id, name, description
+            FROM tobject_type_setup
+            ORDER BY id
+        `);
+
+        const [counts] = await pool.query(`
+            SELECT id_object_type, COUNT(*) as count
+            FROM tinventory
+            GROUP BY id_object_type
+        `);
+
+        reply.status(200).send({
+            success: true,
+            types,
+            counts
+        });
+    } catch (error: any) {
+        server.log.error(error);
+        reply.status(500).send({
+            success: false,
+            error: error.message || 'Error al obtener tipos de inventario'
         });
     }
 })

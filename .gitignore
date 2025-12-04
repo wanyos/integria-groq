@@ -28,3 +28,6 @@ Thumbs.db
 # Logs
 logs/
 *.log
+
+# Database - solo ignorar el archivo grande de datos
+database/02-integria-data.sql

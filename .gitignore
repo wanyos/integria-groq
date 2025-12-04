@@ -31,3 +31,6 @@ logs/
 
 # Database - solo ignorar el archivo grande de datos
 database/02-integria-data.sql
+
+# API Keys y secretos
+documents/groq.txt

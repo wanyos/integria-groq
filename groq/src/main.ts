@@ -2,9 +2,10 @@ import Fastify from 'fastify'
 import type { FastifyRequest, FastifyReply } from 'fastify'
 import cors from '@fastify/cors'
 import { pool } from './mysql.js'
-import Groq from 'groq-sdk';
 import { getDatabaseSchema, invalidateSchemaCache } from './schema-generator.js';
 import { analyzeDatabase, generateAnalysisReport } from './schema-analyzer.js';
+import { AIProviderFactory } from './modelos-ia/index.js';
+import { getSystemPrompt } from './prompts/system-prompt.js';
 
 const PORT = 8155
 
@@ -16,14 +17,11 @@ await server.register(cors, {
     credentials: true
 })
 
-const groq = new Groq({
-    apiKey: process.env.GROQ_API_KEY
-});
+// Inicializar el proveedor de IA (por defecto usa la variable de entorno AI_MODEL o 'groq')
+const activeModelType = AIProviderFactory.getActiveModel();
+const aiProvider = AIProviderFactory.fromEnv(activeModelType);
 
-
-server.get('/', (request: FastifyRequest, reply: FastifyReply) => {
-    reply.status(200).send('hello fastify')
-})
+server.log.info(`Using AI model: ${activeModelType}`);
 
 
 server.get('/test-db', async (_request: FastifyRequest, reply: FastifyReply) => {
@@ -54,67 +52,13 @@ server.post<{ Body: QueryRequest }>('/query', async (request: FastifyRequest<{ B
         // 1. Obtener schema dinámicamente
         const dbSchema = await getDatabaseSchema();
 
-        // 2. Usar Groq para generar la query SQL
-        const chatCompletion = await groq.chat.completions.create({
-            messages: [
-                {
-                    role: 'system',
-                    content: `Eres un experto SQL especializado en la base de datos de Integria IMS.
+        // 2. Obtener el system prompt
+        const systemPrompt = getSystemPrompt(dbSchema);
 
-TABLAS DISPONIBLES:
-${dbSchema}
+        // 3. Usar el proveedor de IA para generar la query SQL
+        const aiResponse = await aiProvider.generateSQL(question, dbSchema, systemPrompt);
 
-⚠️ NOMBRES DE TABLA EXACTOS - NO los traduzcas:
-- ✅ CORRECTO: tincidencia, tusuario, tinventory, tgrupo, tobject_type_setup
-- ❌ INCORRECTO: tincident, tuser, inventory, object_type
-
-📋 GUÍA DE CONSULTAS POR TIPO:
-
-INCIDENCIAS:
-- Tabla principal: tincidencia
-- Campos clave: id_incidencia, titulo, descripcion, inicio, id_usuario, id_grupo
-- Ejemplo: SELECT * FROM tincidencia ORDER BY id_incidencia DESC LIMIT 10
-
-INVENTARIO:
-- Tabla principal: tinventory
-- Campos clave: id, id_object_type, name, description
-- El campo 'name' contiene códigos (ej: FUENTE-0001), NO nombres descriptivos
-- Para buscar por tipo usa 'description' con LIKE, NO 'name'
-- Para ordenadores: WHERE description LIKE '%ordenador%' OR description LIKE '%computer%' OR description LIKE '%PC%'
-- Para portátiles: WHERE description LIKE '%portatil%' OR description LIKE '%laptop%'
-- Para teléfonos: WHERE description LIKE '%telefono%' OR description LIKE '%phone%' OR description LIKE '%movil%'
-- Para total general: SELECT COUNT(*) AS total FROM tinventory
-- Para ver tipos disponibles: SELECT id_object_type, COUNT(*) FROM tinventory GROUP BY id_object_type
-- Ejemplo: SELECT COUNT(*) AS total FROM tinventory WHERE description LIKE '%portatil%'
-
-USUARIOS:
-- Tabla principal: tusuario
-- Campos clave: id_usuario, nombre_real, id_usuario
-
-REGLAS IMPORTANTES:
-1. Usa EXACTAMENTE los nombres de tabla del schema
-2. Responde SOLO con SQL, sin explicaciones
-3. Para inventario, usa tinventory con id_object_type, NO busques en otras tablas
-4. SIEMPRE usa LIMIT (máximo 100)
-5. Para contar cosas, usa COUNT(*) AS nombre_descriptivo
-
-EJEMPLOS CORRECTOS:
-- Incidencias: SELECT * FROM tincidencia ORDER BY id_incidencia DESC LIMIT 10
-- Inventario total: SELECT COUNT(*) AS total_inventario FROM tinventory LIMIT 1
-- Por tipo: SELECT COUNT(*) AS total FROM tinventory WHERE id_object_type = 1 LIMIT 1
-- Con nombres: SELECT name, description FROM tinventory LIMIT 20`
-                },
-                {
-                    role: 'user',
-                    content: question
-                }
-            ],
-            model: 'llama-3.3-70b-versatile',
-            temperature: 0.1,
-            max_tokens: 200
-        });
-
-        let rawResponse = chatCompletion.choices[0]?.message?.content?.trim() || '';
+        let rawResponse = aiResponse.content;
 
         if (!rawResponse) {
             return reply.status(500).send({
@@ -152,7 +96,9 @@ EJEMPLOS CORRECTOS:
             question,
             sql: sqlQuery,
             data: rows,
-            count: Array.isArray(rows) ? rows.length : 0
+            count: Array.isArray(rows) ? rows.length : 0,
+            model: aiResponse.model,
+            usage: aiResponse.usage
         });
 
     } catch (error: any) {

@@ -7,14 +7,17 @@
     "dev": "tsx watch --env-file=.env.local src/main.ts",
     "start": "tsx --env-file=.env.local src/main.ts",
     "build": "tsc",
-    "start:prod": "node --env-file=.env.local dist/main.js"
+    "start:prod": "node --env-file=.env.local dist/main.js",
+    "test:models": "tsx --env-file=.env.local test-models.js"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "type": "module",
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.71.1",
     "@fastify/cors": "^11.1.0",
+    "@google/generative-ai": "^0.24.1",
     "fastify": "^5.6.2",
     "groq-sdk": "^0.37.0",
     "mysql2": "^3.15.3",
